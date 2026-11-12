@@ -72,13 +72,14 @@ mosquitto -v
 
 ### Step 2: Start FastAPI Backend (Terminal 2, Repo Root)
 ```bash
-uvicorn app:app --reload
-```
+cd backend
+uvicorn app:app --reload```
 *Backend serves HTTP endpoints on `http://localhost:8000` and subscribes to MQTT `sentrymesh/+/alert`.*
 
 ### Step 3: Simulate ESP32 Fence Nodes (Terminals 3 & 4)
 ```bash
 # Node 01 publishing alerts every 3 seconds
+cd backend
 python fake_node.py --node node_01 --interval 3
 
 # Node 02 publishing alerts every 5 seconds
