@@ -5,7 +5,7 @@ import ConnectionIndicator from './ConnectionIndicator'
 import { useEvents } from '../hooks/useEvents'
 
 export default function Navbar() {
-  const { isConnected, isMock, isFallback, mode, setMode, isMuted, toggleMute } = useEvents()
+  const { isConnected, isWsConnected, isMock, isFallback, mode, setMode, isMuted, toggleMute, health } = useEvents()
   const [currentTime, setCurrentTime] = useState(new Date())
 
   // Digital clock update every 1s
@@ -103,7 +103,13 @@ export default function Navbar() {
             </div>
 
             {/* Backend Connection Indicator */}
-            <ConnectionIndicator isConnected={isConnected} isMock={isMock} isFallback={isFallback} />
+            <ConnectionIndicator
+              isConnected={isConnected}
+              isWsConnected={isWsConnected}
+              isMock={isMock}
+              isFallback={isFallback}
+              mqttConnected={health?.mqtt_connected ?? true}
+            />
 
             {/* Audio Mute Button */}
             <button

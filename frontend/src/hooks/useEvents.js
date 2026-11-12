@@ -1,6 +1,6 @@
 // Central event and application state hook + context provider
 import React, { createContext, useContext, useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import { fetchEvents, fetchHealth, normalizeEvent } from '../services/api'
+import { fetchEvents, fetchHealth, getNodes, connectAlertsSocket, normalizeEvent } from '../services/api'
 import { generateInitialMockEvents, createRawMockEvent, getMockHealth, incrementMockHealth } from '../services/mockData'
 import { parseDate } from '../utils/time'
 import { playAlarmBeep } from '../utils/sound'
@@ -29,12 +29,29 @@ export function EventProvider({ children }) {
 
   // Backend connection state
   const [isConnected, setIsConnected] = useState(true)
+  const [isWsConnected, setIsWsConnected] = useState(false)
   const [isFallback, setIsFallback] = useState(false)
   const [loading, setLoading] = useState(true)
 
   // Events & health data
   const [events, setEvents] = useState([])
-  const [health, setHealth] = useState({ received: 0, stored: 0, rejected: 0, status: 'ok' })
+  const [health, setHealth] = useState({
+    received: 0,
+    stored: 0,
+    rejected: 0,
+    status: 'ok',
+    heartbeats: 0,
+    status_messages: 0,
+    rejected_other: 0,
+    mqtt_connected: true,
+    ws_clients: 0,
+    nodes_total: 0,
+    nodes_online: 0,
+    heartbeat_timeout_s: 30,
+  })
+
+  // Backend node list from GET /nodes and WebSocket messages
+  const [rawNodes, setRawNodes] = useState([])
 
   // New alert highlights (set of alert IDs)
   const [newAlertIds, setNewAlertIds] = useState(() => new Set())
@@ -156,23 +173,40 @@ export function EventProvider({ children }) {
     setLoading(false)
   }, [handleNewAlerts])
 
-  // Fetch from real backend
-  const pollBackend = useCallback(async () => {
+  // Helper to merge or update node objects in rawNodes state
+  const updateNodesState = useCallback((nodeOrNodes) => {
+    setRawNodes((prev) => {
+      const map = new Map(prev.map((n) => [n.node_id, n]))
+      const incoming = Array.isArray(nodeOrNodes) ? nodeOrNodes : [nodeOrNodes]
+      incoming.forEach((node) => {
+        if (node && node.node_id) {
+          map.set(node.node_id, { ...map.get(node.node_id), ...node })
+        }
+      })
+      return Array.from(map.values())
+    })
+  }, [])
+
+  // Initial load of history & nodes from HTTP
+  const loadInitialData = useCallback(async () => {
     if (mode === 'demo') {
-      // In explicit demo mode, don't poll backend
       return
     }
 
     try {
-      const [healthData, eventsData] = await Promise.all([
+      const [healthData, eventsData, nodesData] = await Promise.all([
         fetchHealth(),
         fetchEvents({ limit: 500 }),
+        getNodes().catch(() => []),
       ])
 
       setIsConnected(true)
       setIsFallback(false)
       setHealth(healthData)
       setEvents(eventsData)
+      if (nodesData && nodesData.length > 0) {
+        updateNodesState(nodesData)
+      }
       handleNewAlerts(eventsData)
       setLoading(false)
     } catch (err) {
@@ -181,9 +215,25 @@ export function EventProvider({ children }) {
       setIsFallback(true)
       initMockData()
     }
-  }, [mode, handleNewAlerts, initMockData])
+  }, [mode, handleNewAlerts, initMockData, updateNodesState])
 
-  // Poll health separately every 5s if connected
+  // Polling fallback for events: ONLY runs when mode === 'live' and WebSocket is NOT connected and not in fallback
+  const pollEventsFallback = useCallback(async () => {
+    if (mode === 'demo' || isFallback || isWsConnected) {
+      return
+    }
+    try {
+      const eventsData = await fetchEvents({ limit: 500 })
+      setIsConnected(true)
+      setEvents(eventsData)
+      handleNewAlerts(eventsData)
+    } catch {
+      setIsConnected(false)
+      setIsFallback(true)
+    }
+  }, [mode, isFallback, isWsConnected, handleNewAlerts])
+
+  // Poll health every 5s if connected
   const pollHealthOnly = useCallback(async () => {
     if (mode === 'demo' || isFallback) {
       setHealth(getMockHealth())
@@ -199,23 +249,91 @@ export function EventProvider({ children }) {
     }
   }, [mode, isFallback])
 
+  // Refresh /nodes every 10 s for last_seen
+  const refreshNodes = useCallback(async () => {
+    if (mode === 'demo' || isFallback) {
+      return
+    }
+    try {
+      const nodesList = await getNodes()
+      if (nodesList) {
+        updateNodesState(nodesList)
+      }
+    } catch {
+      // ignore transient errors in background refresh
+    }
+  }, [mode, isFallback, updateNodesState])
+
+  // Connect WebSocket when in 'live' mode
+  useEffect(() => {
+    if (mode === 'demo' || isFallback) {
+      setIsWsConnected(false)
+      return
+    }
+
+    const disconnect = connectAlertsSocket(
+      (msg) => {
+        if (!msg || !msg.type) return
+
+        if (msg.type === 'snapshot') {
+          if (msg.data?.nodes) {
+            updateNodesState(msg.data.nodes)
+          }
+        } else if (msg.type === 'node_status') {
+          if (msg.data) {
+            updateNodesState(msg.data)
+          }
+        } else if (msg.type === 'alert') {
+          if (msg.data) {
+            const normalized = normalizeEvent(msg.data)
+            if (normalized) {
+              setEvents((prev) => {
+                // Deduplicate by ID
+                if (prev.some((e) => e.id === normalized.id)) {
+                  return prev
+                }
+                return [normalized, ...prev]
+              })
+              handleNewAlerts([normalized])
+            }
+          }
+        }
+      },
+      (status) => {
+        setIsWsConnected(status === 'connected')
+        if (status === 'connected') {
+          setIsConnected(true)
+        }
+      }
+    )
+
+    return () => {
+      disconnect()
+      setIsWsConnected(false)
+    }
+  }, [mode, isFallback, handleNewAlerts, updateNodesState])
+
   // Initial load effect
   useEffect(() => {
     isInitialLoadRef.current = true
     if (mode === 'demo') {
       setIsConnected(false)
+      setIsWsConnected(false)
       setIsFallback(false)
       initMockData()
     } else {
-      pollBackend()
+      loadInitialData()
     }
-  }, [mode, pollBackend, initMockData])
+  }, [mode, loadInitialData, initMockData])
 
-  // Poll events every 3s
-  usePolling(pollBackend, 3000, mode === 'live' && !isFallback)
+  // Poll events every 3s ONLY as a fallback while the socket is disconnected
+  usePolling(pollEventsFallback, 3000, mode === 'live' && !isFallback && !isWsConnected)
 
   // Poll health every 5s
   usePolling(pollHealthOnly, 5000, mode === 'live' && !isFallback)
+
+  // Refresh /nodes every 10s
+  usePolling(refreshNodes, 10000, mode === 'live' && !isFallback)
 
   // Demo simulation timer: add new mock event every 8-15 s when mock data is active
   useEffect(() => {
@@ -253,35 +371,71 @@ export function EventProvider({ children }) {
   }, [isMock, handleNewAlerts])
 
   // Calculate unique nodes and online status
-  // Node online condition: sent any event in the last 60 seconds
+  // When live: use rawNodes (GET /nodes + node_status) as the source of truth for online/offline
+  // When in demo mode: fallback to event activity within last 60s
   const nodesStatus = useMemo(() => {
     const nodeMap = new Map()
     const now = Date.now()
-
-    // Ensure default nodes exist so demo/real displays cleanly
-    const defaultNodes = ['node_01', 'node_02', 'node_03', 'node_04']
-    defaultNodes.forEach((nodeId) => {
-      nodeMap.set(nodeId, {
-        id: nodeId,
-        online: false,
-        lastEvent: null,
-        lastSeenTime: null,
-        eventsCount24h: 0,
-        alertsCount24h: 0,
-        verifiedCount24h: 0,
-        classCounts: {},
-      })
-    })
-
     const twentyFourHoursAgo = now - 24 * 60 * 60 * 1000
 
+    if (!isMock && rawNodes.length > 0) {
+      // Populate nodes from authoritative backend node list
+      rawNodes.forEach((node) => {
+        const isOnline = node.status === 'online'
+        nodeMap.set(node.node_id, {
+          id: node.node_id,
+          online: isOnline,
+          status: node.status,
+          lastSeenTime: node.last_seen ? parseDate(node.last_seen) : null,
+          firstSeenTime: node.first_seen ? parseDate(node.first_seen) : null,
+          firmwareVersion: node.firmware_version || null,
+          ip: node.ip || null,
+          alertCount: node.alert_count !== undefined ? node.alert_count : 0,
+          lastAlertAt: node.last_alert_at ? parseDate(node.last_alert_at) : null,
+          lastEvent: null,
+          eventsCount24h: 0,
+          alertsCount24h: 0,
+          verifiedCount24h: 0,
+          classCounts: {},
+        })
+      })
+    } else {
+      // Ensure default nodes exist so demo displays cleanly
+      const defaultNodes = ['node_01', 'node_02', 'node_03', 'node_04']
+      defaultNodes.forEach((nodeId) => {
+        nodeMap.set(nodeId, {
+          id: nodeId,
+          online: false,
+          status: 'offline',
+          lastEvent: null,
+          lastSeenTime: null,
+          firstSeenTime: null,
+          firmwareVersion: '1.2.0',
+          ip: '192.168.1.10' + nodeId.slice(-1),
+          alertCount: 0,
+          lastAlertAt: null,
+          eventsCount24h: 0,
+          alertsCount24h: 0,
+          verifiedCount24h: 0,
+          classCounts: {},
+        })
+      })
+    }
+
+    // Correlate with alerts for recent alert state and 24h metrics
     events.forEach((ev) => {
       if (!nodeMap.has(ev.nodeId)) {
         nodeMap.set(ev.nodeId, {
           id: ev.nodeId,
           online: false,
+          status: 'offline',
           lastEvent: null,
           lastSeenTime: null,
+          firstSeenTime: null,
+          firmwareVersion: null,
+          ip: null,
+          alertCount: 0,
+          lastAlertAt: null,
           eventsCount24h: 0,
           alertsCount24h: 0,
           verifiedCount24h: 0,
@@ -293,15 +447,18 @@ export function EventProvider({ children }) {
       const evDate = parseDate(ev.timestamp)
       const evTime = evDate ? evDate.getTime() : 0
 
-      // Keep latest event
+      // Keep latest event (used for fence-line hover and 60s coloring)
       if (!nodeData.lastEvent || evTime > (parseDate(nodeData.lastEvent.timestamp)?.getTime() || 0)) {
         nodeData.lastEvent = ev
-        nodeData.lastSeenTime = evDate
+        if (!nodeData.lastSeenTime && isMock) {
+          nodeData.lastSeenTime = evDate
+        }
       }
 
-      // Check online status: any event in the last 60s
-      if (now - evTime <= 60 * 1000) {
+      // In mock/demo mode only: infer online from 60s activity
+      if (isMock && now - evTime <= 60 * 1000) {
         nodeData.online = true
+        nodeData.status = 'online'
       }
 
       // 24h stats
@@ -326,12 +483,13 @@ export function EventProvider({ children }) {
       totalCount: nodesList.length,
       onlineCount: onlineNodes.length,
     }
-  }, [events])
+  }, [events, rawNodes, isMock])
 
   const contextValue = {
     events,
     health,
     isConnected,
+    isWsConnected,
     isFallback,
     isMock,
     mode,
@@ -343,7 +501,7 @@ export function EventProvider({ children }) {
     newAlertIds,
     toasts,
     dismissToast,
-    refreshEvents: pollBackend,
+    refreshEvents: pollEventsFallback,
   }
 
   return React.createElement(EventContext.Provider, { value: contextValue }, children)

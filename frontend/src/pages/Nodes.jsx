@@ -1,6 +1,6 @@
 import React from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Server, Wifi, WifiOff, Clock, ShieldCheck, Activity, ArrowRight, Layers } from 'lucide-react'
+import { Server, Wifi, WifiOff, Clock, ShieldCheck, Activity, ArrowRight, Layers, Cpu, Globe } from 'lucide-react'
 import { useEvents } from '../hooks/useEvents'
 import { NodeStatusBadge, ClassBadge } from '../components/StatusBadge'
 import { formatNodeName, getClassLabel } from '../utils/labels'
@@ -64,6 +64,11 @@ export default function Nodes() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
           {nodesStatus.allNodes.map((node) => {
             const mostFreqClass = getMostFrequentClass(node.classCounts)
+            // Use alert_count from /nodes when available; fallback to calculated 24h count
+            const totalAlerts = node.alertCount !== undefined && node.alertCount !== null
+              ? node.alertCount
+              : node.alertsCount24h
+
             const verifiedPct =
               node.alertsCount24h > 0
                 ? Math.round((node.verifiedCount24h / node.alertsCount24h) * 100)
@@ -100,16 +105,42 @@ export default function Nodes() {
                       </span>
                     </div>
 
-                    {/* Alerts in 24h */}
+                    {/* Alerts (Total / from backend /nodes) */}
                     <div className="flex items-center justify-between py-1 border-b border-slate-800/60">
                       <span className="text-slate-400 flex items-center gap-1.5">
                         <Activity className="w-3.5 h-3.5 text-slate-500" />
-                        Alerts (24h)
+                        Total Alerts
                       </span>
                       <span className="font-mono font-bold text-rose-400">
-                        {node.alertsCount24h}
+                        {totalAlerts}
                       </span>
                     </div>
+
+                    {/* Firmware Version (when present) */}
+                    {node.firmwareVersion && (
+                      <div className="flex items-center justify-between py-1 border-b border-slate-800/60">
+                        <span className="text-slate-400 flex items-center gap-1.5">
+                          <Cpu className="w-3.5 h-3.5 text-slate-500" />
+                          Firmware
+                        </span>
+                        <span className="font-mono text-slate-300">
+                          v{node.firmwareVersion}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* IP address (when present) */}
+                    {node.ip && (
+                      <div className="flex items-center justify-between py-1 border-b border-slate-800/60">
+                        <span className="text-slate-400 flex items-center gap-1.5">
+                          <Globe className="w-3.5 h-3.5 text-slate-500" />
+                          IP Address
+                        </span>
+                        <span className="font-mono text-slate-300">
+                          {node.ip}
+                        </span>
+                      </div>
+                    )}
 
                     {/* Most frequent class */}
                     <div className="flex items-center justify-between py-1 border-b border-slate-800/60">
@@ -152,4 +183,3 @@ export default function Nodes() {
     </div>
   )
 }
-

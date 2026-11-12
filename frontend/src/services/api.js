@@ -76,16 +76,160 @@ export async function fetchHealth(signal) {
     received: Number(data.received) || 0,
     stored: Number(data.stored) || 0,
     rejected: Number(data.rejected) || 0,
+    heartbeats: Number(data.heartbeats) || 0,
+    status_messages: Number(data.status_messages) || 0,
+    rejected_other: Number(data.rejected_other) || 0,
+    mqtt_connected: Boolean(data.mqtt_connected),
+    ws_clients: Number(data.ws_clients) || 0,
+    nodes_total: Number(data.nodes_total) || 0,
+    nodes_online: Number(data.nodes_online) || 0,
+    heartbeat_timeout_s: Number(data.heartbeat_timeout_s) || 30,
+  }
+}
+
+/**
+ * Fetch nodes list from GET /nodes
+ */
+export async function getNodes(signal) {
+  const res = await fetch(`${API_BASE}/nodes`, {
+    signal,
+    headers: {
+      Accept: 'application/json',
+    },
+  })
+
+  if (!res.ok) {
+    throw new Error(`HTTP error ${res.status}: ${res.statusText}`)
+  }
+
+  const list = await res.json()
+  if (!Array.isArray(list)) {
+    throw new Error('Expected array of nodes from server')
+  }
+
+  return list
+}
+
+/**
+ * Connect to WebSocket /ws/alerts with auto-reconnect (exponential backoff, max 30 s)
+ * and ping/pong keep-alive every 25 s.
+ *
+ * onMessage callback receives parsed message objects:
+ *   - { type: "snapshot", data: { nodes: [...] } }
+ *   - { type: "alert", data: <raw event> }
+ *   - { type: "node_status", data: <node object> }
+ *
+ * onStatusChange(status: "connected" | "disconnected") is optional
+ * Returns cleanup function to disconnect cleanly.
+ */
+export function connectAlertsSocket(onMessage, onStatusChange = () => {}) {
+  let ws = null
+  let isClosedIntentionally = false
+  let pingTimer = null
+  let reconnectTimer = null
+  let retryCount = 0
+
+  // Derive ws/wss url from API_BASE
+  const apiUrl = new URL(API_BASE)
+  const wsProtocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:'
+  const wsUrl = `${wsProtocol}//${apiUrl.host}/ws/alerts`
+
+  function scheduleReconnect() {
+    if (isClosedIntentionally) return
+    // Exponential backoff: min 1s, doubling, capped at 30s
+    const delay = Math.min(30000, 1000 * Math.pow(1.5, retryCount))
+    retryCount++
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+    reconnectTimer = setTimeout(() => {
+      connect()
+    }, delay)
+  }
+
+  function startPing() {
+    stopPing()
+    pingTimer = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send('ping')
+      }
+    }, 25000)
+  }
+
+  function stopPing() {
+    if (pingTimer) {
+      clearInterval(pingTimer)
+      pingTimer = null
+    }
+  }
+
+  function connect() {
+    if (isClosedIntentionally) return
+
+    try {
+      ws = new WebSocket(wsUrl)
+    } catch (err) {
+      onStatusChange('disconnected')
+      scheduleReconnect()
+      return
+    }
+
+    ws.onopen = () => {
+      retryCount = 0
+      onStatusChange('connected')
+      startPing()
+    }
+
+    ws.onmessage = (event) => {
+      if (event.data === 'pong') {
+        return
+      }
+      try {
+        const parsed = JSON.parse(event.data)
+        if (parsed && typeof onMessage === 'function') {
+          onMessage(parsed)
+        }
+      } catch (err) {
+        console.warn('[ws] Failed to parse message:', event.data, err)
+      }
+    }
+
+    ws.onclose = () => {
+      stopPing()
+      onStatusChange('disconnected')
+      scheduleReconnect()
+    }
+
+    ws.onerror = () => {
+      // onerror is immediately followed by onclose
+      stopPing()
+      onStatusChange('disconnected')
+    }
+  }
+
+  connect()
+
+  return function disconnect() {
+    isClosedIntentionally = true
+    stopPing()
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
+    if (ws) {
+      ws.close()
+      ws = null
+    }
+    onStatusChange('disconnected')
   }
 }
 
 /**
  * Fetch events list from GET /events
- * Supports limit, nodeId, cls query parameters
+ * Supports limit, offset, nodeId, cls query parameters
  */
-export async function fetchEvents({ limit = 500, nodeId = null, cls = null, signal } = {}) {
+export async function fetchEvents({ limit = 500, offset = 0, nodeId = null, cls = null, signal } = {}) {
   const url = new URL(`${API_BASE}/events`)
   if (limit) url.searchParams.set('limit', String(limit))
+  if (offset) url.searchParams.set('offset', String(offset))
   if (nodeId) url.searchParams.set('node_id', nodeId)
   if (cls) url.searchParams.set('class', cls)
 
@@ -107,4 +251,3 @@ export async function fetchEvents({ limit = 500, nodeId = null, cls = null, sign
 
   return list.map(normalizeEvent)
 }
-

@@ -11,6 +11,10 @@ import {
   XCircle,
   Database,
   ArrowRight,
+  Heart,
+  Radio,
+  AlertTriangle,
+  Wifi,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useEvents } from '../hooks/useEvents'
@@ -26,7 +30,21 @@ import { formatNodeName } from '../utils/labels'
 
 export default function Dashboard() {
   const { events, nodesStatus, newAlertIds, loading } = useEvents()
-  const { received, stored, rejected, isConnected } = useHealth()
+  const {
+    received,
+    stored,
+    rejected,
+    heartbeats,
+    status_messages,
+    rejected_other,
+    mqtt_connected,
+    ws_clients,
+    nodes_total,
+    nodes_online,
+    isConnected,
+    isWsConnected,
+    isMock,
+  } = useHealth()
 
   // Selected node filter on dashboard (from clicking on FenceLine)
   const [selectedNodeFilter, setSelectedNodeFilter] = useState(null)
@@ -86,6 +104,10 @@ export default function Dashboard() {
   const recentAlerts = useMemo(() => {
     return filteredEvents.slice(0, 10)
   }, [filteredEvents])
+
+  // Authoritative nodes counts: use nodes_online/nodes_total from health when available, or nodesStatus
+  const displayOnlineCount = !isMock && nodes_total > 0 ? nodes_online : nodesStatus.onlineCount
+  const displayTotalCount = !isMock && nodes_total > 0 ? nodes_total : nodesStatus.totalCount
 
   return (
     <div className="space-y-6 pb-12">
@@ -163,10 +185,10 @@ export default function Dashboard() {
 
         <StatCard
           title="Nodes Online"
-          value={`${nodesStatus.onlineCount} / ${nodesStatus.totalCount}`}
-          subtitle="Active in last 60s"
+          value={`${displayOnlineCount} / ${displayTotalCount}`}
+          subtitle={!isMock ? 'Authoritative /nodes status' : 'Active in last 60s'}
           icon={Server}
-          variant={nodesStatus.onlineCount > 0 ? 'success' : 'warning'}
+          variant={displayOnlineCount > 0 ? 'success' : 'warning'}
           loading={loading}
         />
       </div>
@@ -226,10 +248,12 @@ export default function Dashboard() {
               </div>
               <span className={`px-2 py-0.5 rounded text-[10px] font-mono uppercase font-semibold ${
                 isConnected
-                  ? 'bg-emerald-950 text-emerald-400 border border-emerald-500/30'
+                  ? isWsConnected
+                    ? 'bg-emerald-950 text-emerald-400 border border-emerald-500/30'
+                    : 'bg-sky-950 text-sky-400 border border-sky-500/30'
                   : 'bg-amber-950 text-amber-400 border border-amber-500/30'
               }`}>
-                {isConnected ? 'MQTT LIVE' : 'DEMO MODE'}
+                {isConnected ? (isWsConnected ? 'WS LIVE' : 'HTTP LIVE') : 'DEMO MODE'}
               </span>
             </div>
 
@@ -237,55 +261,85 @@ export default function Dashboard() {
               Live counters reported by FastAPI <code className="text-slate-300 font-mono">/health</code> endpoint.
             </p>
 
-            <div className="space-y-2.5">
-              {/* Received */}
-              <div className="p-3 rounded-lg bg-slate-950/70 border border-slate-800 flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="p-1.5 rounded-md bg-blue-500/10 text-blue-400">
-                    <HardDrive className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <span className="text-xs font-medium text-slate-300">Packets Received</span>
-                    <p className="text-[10px] text-slate-500">MQTT edge ingress</p>
-                  </div>
+            {/* Nodes Online / Total from /health */}
+            <div className="p-3 rounded-lg bg-slate-950/70 border border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-1.5 rounded-md bg-cyan-500/10 text-cyan-400">
+                  <Wifi className="w-4 h-4" />
                 </div>
-                <span className="font-mono text-base font-bold text-slate-100">{received}</span>
+                <div>
+                  <span className="text-xs font-medium text-slate-300">Nodes Online / Total</span>
+                  <p className="text-[10px] text-slate-500">Perimeter node registry</p>
+                </div>
+              </div>
+              <span className="font-mono text-base font-bold text-cyan-400">
+                {displayOnlineCount} / {displayTotalCount}
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              {/* Packets Received */}
+              <div className="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <HardDrive className="w-3.5 h-3.5 text-blue-400" />
+                  <span className="text-xs text-slate-300">Alerts Received</span>
+                </div>
+                <span className="font-mono text-xs font-bold text-slate-100">{received}</span>
               </div>
 
-              {/* Stored */}
-              <div className="p-3 rounded-lg bg-slate-950/70 border border-slate-800 flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="p-1.5 rounded-md bg-emerald-500/10 text-emerald-400">
-                    <CheckCircle2 className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <span className="text-xs font-medium text-slate-300">Packets Stored</span>
-                    <p className="text-[10px] text-slate-500">SQLite audit trail</p>
-                  </div>
+              {/* Packets Stored */}
+              <div className="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  <span className="text-xs text-slate-300">Alerts Stored</span>
                 </div>
-                <span className="font-mono text-base font-bold text-emerald-400">{stored}</span>
+                <span className="font-mono text-xs font-bold text-emerald-400">{stored}</span>
               </div>
 
-              {/* Rejected */}
-              <div className="p-3 rounded-lg bg-slate-950/70 border border-slate-800 flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="p-1.5 rounded-md bg-rose-500/10 text-rose-400">
-                    <XCircle className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <span className="text-xs font-medium text-slate-300">Packets Rejected</span>
-                    <p className="text-[10px] text-slate-500">Schema validation failed</p>
-                  </div>
+              {/* Alerts Rejected */}
+              <div className="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <XCircle className="w-3.5 h-3.5 text-rose-400" />
+                  <span className="text-xs text-slate-300">Alerts Rejected</span>
                 </div>
-                <span className={`font-mono text-base font-bold ${rejected > 0 ? 'text-rose-400' : 'text-slate-400'}`}>
+                <span className={`font-mono text-xs font-bold ${rejected > 0 ? 'text-rose-400' : 'text-slate-400'}`}>
                   {rejected}
+                </span>
+              </div>
+
+              {/* Heartbeats */}
+              <div className="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Heart className="w-3.5 h-3.5 text-pink-400" />
+                  <span className="text-xs text-slate-300">Heartbeats</span>
+                </div>
+                <span className="font-mono text-xs font-bold text-pink-400">{heartbeats}</span>
+              </div>
+
+              {/* Status Messages */}
+              <div className="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Radio className="w-3.5 h-3.5 text-indigo-400" />
+                  <span className="text-xs text-slate-300">Status Messages</span>
+                </div>
+                <span className="font-mono text-xs font-bold text-indigo-400">{status_messages}</span>
+              </div>
+
+              {/* Rejected Other */}
+              <div className="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                  <span className="text-xs text-slate-300">Rejected Other</span>
+                </div>
+                <span className={`font-mono text-xs font-bold ${rejected_other > 0 ? 'text-amber-400' : 'text-slate-400'}`}>
+                  {rejected_other}
                 </span>
               </div>
             </div>
           </div>
 
           <div className="mt-4 pt-3 border-t border-slate-800 text-[11px] text-slate-500 flex items-center justify-between">
-            <span>Storage Success Rate:</span>
+            <span>Alert Ingest Success:</span>
             <span className="font-mono text-slate-300 font-semibold">
               {received > 0 ? `${Math.round((stored / received) * 100)}%` : '100%'}
             </span>
@@ -302,4 +356,3 @@ export default function Dashboard() {
     </div>
   )
 }
-

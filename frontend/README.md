@@ -8,10 +8,11 @@ Real-time operations dashboard for monitoring seismic, acoustic, and CCTV-fused 
 
 ## Features
 
-- **Real-Time Telemetry & Alert Stream**: Live polling of backend alerts (`/events`) and health telemetry (`/health`) with automatic tab visibility throttling.
-- **Physical Fence-Line Schematic**: Interactive SVG visualization of the perimeter fence and nodes with live intrusion color states (pulsing red for verified alerts, amber for unverified sensor alerts, green for quiet, grey for offline).
+- **Real-Time WebSocket & Telemetry Stream**: Instant alert delivery over WebSocket (`ws://<host>/ws/alerts`) with automatic keep-alive ping (every 25 s), auto-reconnect with exponential backoff (max 30 s), and automatic fallback to 3 s HTTP polling if the socket disconnects.
+- **Authoritative Node Management**: Real-time node lifecycle and status tracking via `GET /nodes` and WebSocket `node_status` events (`online` / `offline`, firmware versions, IP addresses, heartbeats).
+- **Physical Fence-Line Schematic**: Interactive SVG visualization of the perimeter fence and nodes with live intrusion color states (pulsing red for verified alerts in the last 60 s, amber for unverified sensor alerts in the last 60 s, green for quiet online nodes, grey for offline).
 - **Incident Analysis & Class Charts**: Visual breakdown of classified intrusion activity (Walk/Run, Vehicle, Digging, Climbing/Cutting) and 24-hour stacked volume timeline (Verified CCTV vs Unverified Sensor-Only).
-- **Multi-Parameter Audit Filter**: Comprehensive multi-select by node, classification, verification status, and confidence threshold with URL synchronization and one-click CSV export.
+- **Multi-Parameter Audit Filter**: Comprehensive multi-select by node, classification, verification status, and confidence threshold with URL synchronization, pagination, and one-click CSV export.
 - **Trimodal Sensor Breakdown Drawer**: Inspect per-sensor confidence (Piezo Vibration / Acoustic Microphone / Cloud CCTV Vision) and transmission latency telemetry.
 - **Auditory Security Alarms**: Web Audio API synthesized electronic alarm beeps for new intrusions with persistent mute memory.
 - **Zero-Blank-Screen Demo Fallback**: Standalone demo mode with realistic random events generator and automatic failover whenever the backend is unreachable.
@@ -51,39 +52,43 @@ Default configuration:
 VITE_API_URL=http://localhost:8000
 ```
 
+> **Note on CORS**: The backend CORS policy allows `http://localhost:5173` and `http://127.0.0.1:5173` by default (unless overridden via the `CORS_ORIGINS` environment variable). Always open the console at `http://localhost:5173` or `http://127.0.0.1:5173`.
+
 ### 3. Run Development Server
 
 ```bash
 npm run dev
 ```
 
-The console opens at `http://localhost:5173`.
+Open `http://localhost:5173` in your browser.
 
 ---
 
 ## Running the Full Demo Stack
 
-To experience SentryMesh with live MQTT traffic and simulated ESP32 nodes:
+To experience SentryMesh with live MQTT traffic, heartbeats, and simulated ESP32 nodes:
 
 ### Step 1: Start MQTT Broker (Terminal 1)
 ```bash
 mosquitto -v
 ```
 
-### Step 2: Start FastAPI Backend (Terminal 2, Repo Root)
+### Step 2: Start FastAPI Backend (Terminal 2)
 ```bash
 cd backend
-uvicorn app:app --reload```
-*Backend serves HTTP endpoints on `http://localhost:8000` and subscribes to MQTT `sentrymesh/+/alert`.*
+uvicorn app:app --reload
+```
+*Backend serves HTTP endpoints and WebSockets on `http://localhost:8000` and subscribes to MQTT `sentrymesh/+/alert`, `heartbeat`, and `status`.*
 
 ### Step 3: Simulate ESP32 Fence Nodes (Terminals 3 & 4)
 ```bash
-# Node 01 publishing alerts every 3 seconds
+# Node 01 publishing alerts and staying online with heartbeats
 cd backend
-python fake_node.py --node node_01 --interval 3
+python fake_node.py --node node_01 --stay-online
 
-# Node 02 publishing alerts every 5 seconds
-python fake_node.py --node node_02 --interval 5
+# Node 02 publishing alerts with custom interval and staying online
+cd backend
+python fake_node.py --node node_02 --interval 5 --stay-online
 ```
 
 ### Step 4: Start Frontend Console (Terminal 5)
@@ -92,11 +97,17 @@ cd frontend
 npm run dev
 ```
 
+Open `http://localhost:5173` in your browser.
+
 ---
 
 ## Live vs. Demo Mode
 
-- **Live Mode**: Actively connects to the real FastAPI backend at `VITE_API_URL`. Polls `/events` every 3 seconds and `/health` every 5 seconds.
-  - **Automatic Fallback**: If the backend is offline or unreachable, the dashboard automatically falls back to simulated demo data, displaying an amber **DEMO DATA** badge and red connection indicator so your presentation or demonstration never shows an empty error screen.
-- **Demo Mode**: Can be toggled manually via the navbar **Live / Demo** switch. Runs entirely client-side with ~60 pre-generated events across `node_01`–`node_04` spanning the last 24 hours, injecting fresh simulated intrusion events every 8–15 seconds to demonstrate real-time toasts and alarms.
-
+- **Live Mode**:
+  - Connects to the FastAPI backend at `VITE_API_URL` and opens a WebSocket to `ws://<host>/ws/alerts`.
+  - The navbar indicator displays **Live (WebSocket)** when the WebSocket is open and streaming alerts in real time.
+  - If the WebSocket disconnects, the indicator gracefully falls back to **Live (polling)** (polling `/events` every 3 s) while attempting auto-reconnect in the background.
+  - If `/health` reports that `mqtt_connected` is false, a **MQTT broker disconnected** alert badge is displayed in the navbar.
+  - If the backend is completely unreachable, the dashboard automatically transitions to simulated demo data with an amber **DEMO DATA** badge.
+- **Demo Mode**:
+  - Toggled manually via the navbar **Live / Demo** switch. Runs entirely client-side with ~60 historical events, periodic mock node heartbeats, and simulated intrusion events every 8–15 seconds.
