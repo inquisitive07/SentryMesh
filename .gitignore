@@ -1,11 +1,14 @@
-@"
 venv/
+.venv/
 __pycache__/
 *.py[cod]
+*.db
 .env
 .env.*
 !.env.example
 .pytest_cache/
 .idea/
 .vscode/
-"@ | Set-Content .gitignore
+node_modules/
+dist/
+amqtt.yaml
